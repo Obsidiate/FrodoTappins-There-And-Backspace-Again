@@ -1,6 +1,19 @@
 # FrodoTappins — There and Backspace Again
 
-A small, privacy-respecting activity counter for Windows. It tracks, per day:
+So. I was idly wondering how often I type the equivalent of the Lord Of The Rings trilogy. 
+Then I excercised free will. 
+
+A small, privacy-respecting activity keystroke counter for Windows, that can sync across devices via a free cloudflare account. 
+
+<p align="center">
+<img width="571" height="1035" alt="frodotappins" src="https://github.com/user-attachments/assets/b978ce63-2f48-497e-aa79-ec9cb6508a4c" />
+</p>
+<p align="center">
+Day is ended, dim my eyes,
+but journey long before me lies.
+</p>
+
+It tracks, per day:
 
 - **Keystrokes** — total key presses
 - **Words** — counted by detecting word boundaries
@@ -15,8 +28,6 @@ Silmarillion*) — a percentage and the words you have left to go for each.
 It can run entire offline, or sync multiple devices via a free-tier Cloudflare account's DB + workers (setup instructions included). 
 
 Why? Idle curiousity. Open source so you can verify keystrokes are not logged, stored, or transmitted. Only counted.
-
-<img width="501" height="912" alt="image" src="https://github.com/user-attachments/assets/8dc117d1-5b4a-4c39-a3f0-07e275ed3f94" />
 
 It also shows your **start date** and **days since** you began tracking, and a
 live **breakdown** across the last hour, day, week, month, year, and all-time.
