@@ -47,7 +47,7 @@ tracker.py          The whole local app (listener + GUI + tray + sync + autostar
 requirements.txt    Python dependencies
 build.bat           One-command build -> dist/Tallyton.exe
 worker.js           Cloudflare Worker (the sync API)
-schema.sql          D1 table definition (one-line version is in this README)
+schema.sql          D1 table definition (top two lines paste straight into the D1 console)
 wrangler.toml       Optional — only used if you deploy via the Wrangler CLI
 ```
 
@@ -103,8 +103,15 @@ benign and add a Defender exclusion if needed.
 ## 2. Cloud sync with Cloudflare (free tier) — optional
 
 The app works fully standalone; this part just adds the cross-device totals. You
-set up one Worker backed by one D1 database, entirely in the Cloudflare dashboard
-— no command-line tools needed. All you need is a free Cloudflare account.
+set up one Worker backed by one D1 database **entirely in the Cloudflare web
+dashboard — no Wrangler, no command-line tools, nothing to install.** All you
+need is a free Cloudflare account and a browser. (If you'd rather use the
+Wrangler CLI, see the note at the end of this section; you can ignore
+`wrangler.toml` otherwise.)
+
+Everything you paste below is given as ready-to-paste blocks: the SQL statements
+are single lines with no `--` comments (the D1 console rejects those), and the
+Worker code is the whole `worker.js` file verbatim.
 
 Two names must match the code exactly (both case-sensitive): the database binding
 **`DB`** and the secret **`API_KEY`** — these are what `worker.js` reads via
@@ -115,8 +122,9 @@ Two names must match the code exactly (both case-sensitive): the database bindin
 1. Dashboard → **Storage & Databases → D1 SQL Database → Create Database**. Name
    it (e.g. `tallyton`) and create it.
 2. Open the database → **Console** (on some accounts this is behind an *Explore
-   Data* button) and run these two statements. The console needs one statement
-   per line with no comments:
+   Data* button) and paste these two statements, then run them. They are the top
+   two lines of `schema.sql` — already on single lines with no comments, exactly
+   as the console needs (one statement per line, no `--` comments):
 
    ```sql
    CREATE TABLE IF NOT EXISTS stats (device_id TEXT NOT NULL, device_name TEXT, day TEXT NOT NULL, keystrokes INTEGER NOT NULL DEFAULT 0, words INTEGER NOT NULL DEFAULT 0, deletions INTEGER NOT NULL DEFAULT 0, alt_tabs INTEGER NOT NULL DEFAULT 0, power_cycles INTEGER NOT NULL DEFAULT 0, updated_at TEXT, PRIMARY KEY (device_id, day));
