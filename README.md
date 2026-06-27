@@ -5,6 +5,10 @@ Then I excercised free will.
 
 A small, privacy-respecting activity keystroke counter for Windows, that can sync across devices via a free cloudflare account. 
 
+<img width="1200" height="627" alt="frodotappins-linkedin-v2" src="https://github.com/user-attachments/assets/0729daeb-1542-4f45-92cd-a68efa713bb3" />
+
+And a larger preview. 
+
 <p align="center">
 <img width="571" height="1035" alt="frodotappins" src="https://github.com/user-attachments/assets/b978ce63-2f48-497e-aa79-ec9cb6508a4c" />
 </p>
