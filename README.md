@@ -13,8 +13,8 @@ And a larger preview. </p>
 <img width="571" height="1035" alt="frodotappins" src="https://github.com/user-attachments/assets/b978ce63-2f48-497e-aa79-ec9cb6508a4c" />
 </p>
 <p align="center">
-Day is ended, dim my eyes,
-but journey long before me lies.
+<em>Day is ended, dim my eyes,<br>
+but journey long before me lies.</em>
 </p>
 
 It tracks, per day:
