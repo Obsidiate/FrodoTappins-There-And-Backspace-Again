@@ -241,9 +241,10 @@ separate read-only endpoint if you want a public view).
   only then — with no cloud configured the app makes no network calls at all.
   Use the "Auto-sync to cloud every 15 min" checkbox to turn it off; "Push to
   Cloud" (push + pull) and "Refresh total" (pull only) remain for on-demand use.
-- Built and tested against the structure of `pynput`/`psutil`/`pystray`; if
-  PyInstaller misses a hidden import on your machine, the `--hidden-import` flags
-  in `build.bat` are the place to add more.
-- Windows-only as written (Startup-folder shortcut via PowerShell, Win32 tray,
-  `os.startfile`). The counting/GUI core is cross-platform via `pynput`/Tk if you
-  swap those bits.
+- Built and tested against the structure of `pynput`/`psutil`/`PySide6` (the Qt
+  GUI). The `build.bat` excludes the heavy Qt modules the app never uses to keep
+  the single-file exe small; if PyInstaller misses something on your machine,
+  adjust the `--exclude-module` / add `--hidden-import` flags there.
+- Windows-oriented as written (Startup-folder shortcut via PowerShell,
+  `os.startfile`). The counting core (`pynput`) and the Qt GUI/tray are
+  cross-platform; only the autostart shortcut is Windows-specific.

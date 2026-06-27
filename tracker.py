@@ -20,30 +20,37 @@ import os
 import sys
 import json
 import uuid
-import queue
 import socket
 import time
-import string
 import threading
 import subprocess
 import datetime as dt
 import urllib.request
 import urllib.error
 
+import math
+
 import psutil
 from pynput import keyboard
 
-import tkinter as tk
-from tkinter import ttk, messagebox
+# The GUI is Qt (PySide6): a warm, near-dark "hobbity" wood theme with an
+# animated, self-generating vine border that grows into / retracts from the
+# window as it is resized. The counting/storage/sync backend below is pure
+# Python and UI-agnostic.
+from PySide6.QtCore import Qt, QTimer, QPointF, QEvent, Signal, QObject
+from PySide6.QtGui import (
+    QColor, QPainter, QPainterPath, QPen, QBrush, QFont, QIcon, QPixmap,
+    QImage, QRadialGradient, QLinearGradient, QCursor,
+)
+from PySide6.QtWidgets import (
+    QApplication, QMainWindow, QWidget, QLabel, QPushButton, QLineEdit,
+    QCheckBox, QFrame, QVBoxLayout, QHBoxLayout, QGridLayout, QTreeWidget,
+    QTreeWidgetItem, QHeaderView, QScrollArea, QMessageBox,
+    QSystemTrayIcon, QMenu, QAbstractItemView, QToolButton, QSizePolicy,
+)
 
-# System-tray support is optional. If pystray/Pillow are missing the app still
-# runs as a normal window (closing it then quits instead of hiding to tray).
-try:
-    import pystray
-    from PIL import Image, ImageDraw
-    HAVE_TRAY = True
-except Exception:
-    HAVE_TRAY = False
+# System-tray support is built into Qt; pystray/Pillow are no longer needed.
+HAVE_TRAY = True
 
 # Internal/short name: used for filesystem paths (Startup shortcut) and
 # non-visible code.
@@ -304,6 +311,12 @@ class Config:
         # endpoint + key are configured, so standalone users see no network use.
         return bool(self.data.get("autosync", True))
 
+    @property
+    def cloud_expanded(self) -> bool:
+        # Whether the collapsible Cloud section starts expanded. Remembered
+        # across launches. Defaults expanded.
+        return bool(self.data.get("cloud_expanded", True))
+
 
 # --------------------------------------------------------------------------- #
 # Counter (global keyboard listener) - counts only, never records content
@@ -473,179 +486,1103 @@ def set_autostart(enable: bool):
     )
 
 
+
 # --------------------------------------------------------------------------- #
-# GUI
+# GUI  --  PySide6 (Qt). A warm, near-dark "hobbity" wood theme with a living,
+# self-generating vine border that animates (grows / retracts) as the window is
+# resized. Tables are rendered as aged-parchment "pages" set into the dark wood.
 # --------------------------------------------------------------------------- #
 SYNC_INTERVAL_MS = 15 * 60 * 1000  # auto-sync cadence: 15 minutes
 INITIAL_SYNC_MS = 8 * 1000         # first auto-sync shortly after launch
 
+# -- palette: warm, near-dark, woody ---------------------------------------- #
+WOOD_DEEP   = "#241710"   # window background, deepest wood
+WOOD_DARK   = "#2e1f14"   # panel wood
+WOOD_MID    = "#3b2918"   # raised wood (headers, buttons)
+WOOD_LIGHT  = "#4a3420"   # button hover / borders
+AMBER       = "#e0b25a"   # warm headings / accents
+AMBER_DIM   = "#b8893f"
+PARCHMENT   = "#efe2c4"   # aged-paper table background
+PARCHMENT_2 = "#e6d6b3"   # parchment alternate row
+INK         = "#3a2a17"   # dark-brown "ink" text on parchment
+INK_SOFT    = "#6a5536"
+DONE_GREEN  = "#3f6b2f"   # "you've passed this milestone" green
+SELF_GREEN  = "#2f5d27"
 
-class App:
+# vine / wreath colours (shared with the border widget)
+STEM_DARK   = QColor("#241608")   # woody rope shadow
+STEM_MID    = QColor("#46331e")   # rope body
+STEM_LIGHT  = QColor("#5e4628")   # lit fibres
+IVY_GREENS  = [QColor("#4f6a39"), QColor("#5e7d44"), QColor("#6f8c4a"),
+               QColor("#43562f")]
+MOTE_CORE   = QColor(255, 226, 150)   # warm gold mote
+MOTE_GLOW   = QColor(255, 196, 90)
+MOTE_CORE_B = QColor(190, 224, 255)   # faint blue mote
+MOTE_GLOW_B = QColor(120, 175, 255)
+FRAME_WOOD  = QColor("#5a3f27")   # title-bar underline / wood accents
+
+
+def _lerp(a, b, t):
+    return a + (b - a) * t
+
+
+def _noise(seed, x):
+    v = math.sin((seed * 374761 + x * 668265263) * 1e-7) * 43758.5453
+    return v - math.floor(v)
+
+
+# Tones for the burl texture: a warm mid-brown base with brighter grain so the
+# wood reads clearly as wood (not near-black) while parchment pages and amber
+# text stay legible on top.
+WOOD_BASE_TEX = QColor("#5a4026")   # warm mid-brown base
+WOOD_GRAIN_LIGHT = QColor("#8a6438")
+WOOD_GRAIN_DARK = QColor("#3a2614")
+
+
+def make_burl(w, h, seed=7):
+    """A procedural burl / knotty wood texture, drawn once per size and cached.
+
+    Warped concentric grain rings flow around a few knot centres on a warm
+    mid-brown base; soft knot cores and a light vignette add depth without
+    going murky. No image assets -- generated entirely with QPainter so the
+    app stays a single portable file.
+    """
+    img = QImage(max(w, 1), max(h, 1), QImage.Format_RGB32)
+    qp = QPainter(img)
+    qp.setRenderHint(QPainter.Antialiasing, True)
+    qp.fillRect(0, 0, w, h, WOOD_BASE_TEX)
+
+    knots = []
+    for k in range(4):
+        kx = _noise(seed, k * 3 + 1) * w
+        ky = _noise(seed, k * 3 + 2) * h
+        knots.append((kx, ky, 0.6 + _noise(seed, k * 3 + 3) * 0.8))
+
+    qp.setBrush(Qt.NoBrush)
+    for (kx, ky, scale) in knots:
+        max_r = max(w, h) * (0.5 + scale * 0.4)
+        ring = 0
+        r = 5.0
+        while r < max_r:
+            ring += 1
+            t = 0.5 + 0.5 * math.sin(ring * 0.9)
+            c = QColor(
+                int(_lerp(WOOD_GRAIN_DARK.red(),   WOOD_GRAIN_LIGHT.red(),   t)),
+                int(_lerp(WOOD_GRAIN_DARK.green(), WOOD_GRAIN_LIGHT.green(), t)),
+                int(_lerp(WOOD_GRAIN_DARK.blue(),  WOOD_GRAIN_LIGHT.blue(),  t)),
+            )
+            c.setAlpha(60)
+            qp.setPen(QPen(c, 1.6))
+            pts = []
+            steps = 60
+            for s in range(steps + 1):
+                ang = (s / steps) * math.tau
+                wob = (1.0 + 0.18 * math.sin(ang * 3 + ring * 0.5 + kx * 0.01)
+                           + 0.10 * math.sin(ang * 7 - ky * 0.01))
+                rr = r * wob
+                pts.append(QPointF(kx + math.cos(ang) * rr,
+                                   ky + math.sin(ang) * rr * 0.82))
+            qp.drawPolyline(pts)
+            r += 3.0 + _noise(seed, ring) * 3.5
+
+    for (kx, ky, scale) in knots:
+        rad = 9 + scale * 10
+        g = QRadialGradient(kx, ky, rad)
+        core = QColor(58, 38, 20); core.setAlpha(150)
+        g.setColorAt(0.0, core)
+        edge = QColor(58, 38, 20); edge.setAlpha(0)
+        g.setColorAt(1.0, edge)
+        qp.setBrush(QBrush(g)); qp.setPen(Qt.NoPen)
+        qp.drawEllipse(QPointF(kx, ky), rad, rad * 0.85)
+
+    g = QRadialGradient(w / 2, h / 2, max(w, h) * 0.8)
+    g.setColorAt(0.0, QColor(0, 0, 0, 0))
+    g.setColorAt(1.0, QColor(0, 0, 0, 38))
+    qp.setBrush(QBrush(g)); qp.setPen(Qt.NoPen)
+    qp.drawRect(0, 0, w, h)
+    qp.end()
+    return img
+
+
+# --------------------------------------------------------------------------- #
+# The living vine border: a woven wreath of gnarled, intertwining vines that
+# follow the window perimeter (constrained to a band), with sparse ivy leaves
+# and golden + faint-blue "magic motes" drifting along the vines. The outer
+# band is darkened (a vignette) so the vines read as the window's border,
+# emerging from shadow rather than sitting on a flat box.
+#
+# Performance: the vines + vignette are STATIC once grown, so they are rendered
+# once into a cached pixmap; each animation frame just blits that pixmap and
+# draws the handful of moving motes. The timer also pauses whenever the widget
+# is hidden (window minimised / hidden to tray), so it costs nothing in the
+# background. Resizing rebuilds geometry but carries growth over, so the wreath
+# grows into / retracts from the new shape rather than snapping.
+# --------------------------------------------------------------------------- #
+def _wreath_noise(seed, n):
+    x = math.sin((seed * 928371 + n * 2654435761) * 0.0001) * 43758.5453
+    return x - math.floor(x)
+
+
+def _perimeter_path(w, h, inset, radius, samples=240):
+    """Sample points evenly around a rounded rectangle centred in the band,
+    `inset` in from the window edges. Returns [(QPointF, cumulative_dist)]."""
+    x0, y0, x1, y1 = inset, inset, w - inset, h - inset
+    r = min(radius, (x1 - x0) / 2, (y1 - y0) / 2)
+    if x1 <= x0 or y1 <= y0:
+        return [(QPointF(inset, inset), 0.0)], 1.0
+    path = QPainterPath()
+    path.moveTo(x0 + r, y0)
+    path.lineTo(x1 - r, y0); path.arcTo(x1 - 2*r, y0, 2*r, 2*r, 90, -90)
+    path.lineTo(x1, y1 - r); path.arcTo(x1 - 2*r, y1 - 2*r, 2*r, 2*r, 0, -90)
+    path.lineTo(x0 + r, y1); path.arcTo(x0, y1 - 2*r, 2*r, 2*r, -90, -90)
+    path.lineTo(x0, y0 + r); path.arcTo(x0, y0, 2*r, 2*r, 180, -90)
+    path.closeSubpath()
+    total = path.length() or 1.0
+    pts = []
+    for i in range(samples + 1):
+        pt = path.pointAtPercent(i / samples)
+        pts.append((QPointF(pt.x(), pt.y()), (i / samples) * total))
+    return pts, total
+
+
+class _RingVine:
+    """One vine following the perimeter path, offset across the band by layered
+    sines so it weaves in/out and crosses siblings. `gnarl` draws it as a thick
+    knotty rope (variable width + twisting fibres); otherwise a thin wiry vine."""
+
+    def __init__(self, base_pts, band, seed, start_frac=0.0, coverage=1.0,
+                 width=6.0, amp=0.7, leafy=1.0, gnarl=False):
+        self.seed = seed
+        self.band = band
+        self.width = width
+        self.amp = amp
+        self.leafy = leafy
+        self.gnarl = gnarl
+        self.grown = 0.0
+        self.target = 0.0
+        self.poly = []     # (QPointF, dist_along_vine)
+        self.leaves = []   # (QPointF, dist, size, color, angle)
+        self.path = []     # centreline (== poly) for motes
+        self.total_len = 1.0
+        self._build(base_pts, start_frac, coverage)
+
+    @staticmethod
+    def _normal(base_pts, i):
+        n = len(base_pts)
+        p0 = base_pts[(i - 1) % n][0]; p1 = base_pts[(i + 1) % n][0]
+        tx, ty = p1.x() - p0.x(), p1.y() - p0.y()
+        m = math.hypot(tx, ty) or 1.0
+        return -ty / m, tx / m
+
+    def _build(self, base_pts, start_frac, coverage):
+        n = len(base_pts)
+        if n < 2:
+            return
+        count = max(8, int(coverage * n))
+        start_i = int(start_frac * n)
+        # window centre, to orient the weave so it leans OUTWARD (toward the
+        # edge) and rarely crosses inward over the content.
+        cx = sum(p.x() for p, _d in base_pts) / n
+        cy = sum(p.y() for p, _d in base_pts) / n
+        d_acc = 0.0
+        prev = None
+        for k in range(count + 1):
+            i = (start_i + k) % n
+            bp = base_pts[i][0]
+            nx, ny = self._normal(base_pts, i)
+            # ensure (nx, ny) points outward (away from centre)
+            if (nx * (bp.x() - cx) + ny * (bp.y() - cy)) < 0:
+                nx, ny = -nx, -ny
+            phase = self.seed * 1.7
+            s = (math.sin(k * 0.12 + phase) * 0.6
+                 + math.sin(k * 0.31 + phase * 1.3) * 0.3
+                 + (_wreath_noise(self.seed, k) - 0.5) * 0.25)
+            # bias outward: shift the weave toward the edge so the inner extent
+            # stays clear of content (range roughly [-0.25, +1.0] * half-band).
+            off = (s * 0.62 + 0.38) * self.amp * (self.band * 0.5)
+            p = QPointF(bp.x() + nx * off, bp.y() + ny * off)
+            if prev is not None:
+                d_acc += math.hypot(p.x() - prev.x(), p.y() - prev.y())
+            self.poly.append((p, d_acc))
+            if _wreath_noise(self.seed, k * 3 + 1) < 0.22 * self.leafy:
+                side = 1 if (k % 2 == 0) else -1
+                ang = math.atan2(ny, nx) + side * (0.3 + _wreath_noise(self.seed, k) * 0.6)
+                size = _lerp(6.0, 11.0, _wreath_noise(self.seed, k * 3 + 2))
+                col = IVY_GREENS[int(_wreath_noise(self.seed, k * 3 + 3) * len(IVY_GREENS)) % len(IVY_GREENS)]
+                self.leaves.append((p, d_acc, size, col, ang))
+            prev = p
+        self.total_len = max(d_acc, 1.0)
+        self.path = self.poly
+
+    def set_target(self, t):
+        self.target = max(0.0, min(1.0, t))
+
+    def step(self, dt):
+        self.grown += (self.target - self.grown) * min(1.0, dt * 2.2)
+        if abs(self.target - self.grown) < 0.001:
+            self.grown = self.target
+
+    def draw(self, qp):
+        reveal = self.grown * self.total_len
+        revealed = [(p, d) for (p, d) in self.poly if d <= reveal]
+        if len(revealed) >= 2:
+            if self.gnarl:
+                self._draw_gnarled(qp, revealed)
+            else:
+                self._draw_simple(qp, [p for (p, d) in revealed])
+        for (pos, dist, size, col, a) in self.leaves:
+            if dist > reveal:
+                continue
+            gi = min(1.0, (reveal - dist) / 24.0)
+            self._ivy(qp, pos, size * gi, col, a)
+
+    def _draw_simple(self, qp, pts):
+        path = QPainterPath(); path.moveTo(pts[0])
+        for p in pts[1:]:
+            path.lineTo(p)
+        qp.setPen(QPen(STEM_DARK, self.width + 2.4, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin))
+        qp.drawPath(path)
+        qp.setPen(QPen(STEM_MID, self.width, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin))
+        qp.drawPath(path)
+        qp.setPen(QPen(STEM_LIGHT, max(1.0, self.width * 0.34), Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin))
+        qp.drawPath(path)
+
+    def _draw_gnarled(self, qp, revealed):
+        n = len(revealed)
+        if n < 2:
+            return
+        info = []
+        for i in range(n):
+            p, d = revealed[i]
+            p0 = revealed[max(0, i - 1)][0]; p1 = revealed[min(n - 1, i + 1)][0]
+            tx, ty = p1.x() - p0.x(), p1.y() - p0.y()
+            m = math.hypot(tx, ty) or 1.0
+            nx, ny = -ty / m, tx / m
+            knot = (0.78 + 0.34 * math.sin(d * 0.05 + self.seed)
+                         + 0.16 * math.sin(d * 0.13 + self.seed * 2))
+            hw = (self.width * 0.5) * max(0.5, knot)
+            info.append((p, nx, ny, hw))
+        outline = QPainterPath()
+        outline.moveTo(QPointF(info[0][0].x() + info[0][1] * info[0][3],
+                               info[0][0].y() + info[0][2] * info[0][3]))
+        for (p, nx, ny, hw) in info[1:]:
+            outline.lineTo(QPointF(p.x() + nx * hw, p.y() + ny * hw))
+        for (p, nx, ny, hw) in reversed(info):
+            outline.lineTo(QPointF(p.x() - nx * hw, p.y() - ny * hw))
+        outline.closeSubpath()
+        qp.setPen(QPen(STEM_DARK, 2.0)); qp.setBrush(QBrush(STEM_DARK))
+        qp.drawPath(outline)
+        body = QPainterPath(); body.moveTo(info[0][0])
+        for (p, nx, ny, hw) in info[1:]:
+            body.lineTo(p)
+        qp.setPen(QPen(STEM_MID, self.width * 0.7, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin))
+        qp.setBrush(Qt.NoBrush); qp.drawPath(body)
+        for phase in (0.0, math.pi):
+            sp = QPainterPath()
+            for i, (p, nx, ny, hw) in enumerate(info):
+                off = math.sin(i * 0.6 + phase) * hw * 0.5
+                q = QPointF(p.x() + nx * off, p.y() + ny * off)
+                if i == 0:
+                    sp.moveTo(q)
+                else:
+                    sp.lineTo(q)
+            qp.setPen(QPen(STEM_LIGHT, max(1.0, self.width * 0.16),
+                           Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin))
+            qp.drawPath(sp)
+
+    def _ivy(self, qp, pos, size, col, a):
+        if size < 1.0:
+            return
+        qp.save(); qp.translate(pos); qp.rotate(math.degrees(a))
+        s = size
+        path = QPainterPath(); path.moveTo(0, 0)
+        path.cubicTo(0.5*s, -0.2*s, 0.9*s, -0.5*s, 0.7*s, -0.9*s)
+        path.cubicTo(1.1*s, -0.7*s, 1.5*s, -0.6*s, 1.6*s, 0.0)
+        path.cubicTo(1.5*s, 0.6*s, 1.1*s, 0.7*s, 0.7*s, 0.9*s)
+        path.cubicTo(0.9*s, 0.5*s, 0.5*s, 0.2*s, 0, 0)
+        qp.setBrush(QBrush(col)); qp.setPen(QPen(col.darker(150), 1.0))
+        qp.drawPath(path)
+        qp.setPen(QPen(col.darker(130), 0.9)); qp.drawLine(QPointF(0, 0), QPointF(1.3*s, 0))
+        qp.restore()
+
+
+class _Mote:
+    """A magic spark loafing among the vines. Rather than circulating uniformly,
+    each mote wanders: it eases slowly along its vine (forward OR backward, at
+    its own gentle speed) while also bobbing in a small free-floating orbit, and
+    some barely travel at all (mostly hovering). The mix reads as ambient
+    drifting fireflies, not a conveyor belt."""
+
+    def __init__(self, vine, anchor, seed, blue=False):
+        self.vine = vine
+        self.seed = seed
+        self.phase = (seed % 100) / 100.0
+        self.core = MOTE_CORE_B if blue else MOTE_CORE
+        self.glow = MOTE_GLOW_B if blue else MOTE_GLOW
+        # base position along the vine (0..1 of revealed length) and how far it
+        # drifts from there. ~1/3 are near-stationary "hoverers".
+        self.anchor = anchor
+        r = _wreath_noise(seed, 11)
+        if r < 0.34:
+            self.span = _lerp(0.0, 0.015, _wreath_noise(seed, 12))   # hover
+            self.drift_spd = _lerp(0.02, 0.06, _wreath_noise(seed, 13))
+        else:
+            self.span = _lerp(0.04, 0.13, _wreath_noise(seed, 12))   # wander
+            self.drift_spd = _lerp(0.05, 0.16, _wreath_noise(seed, 13))
+        # direction of the slow along-path sway (some forward, some back)
+        self.dir = 1.0 if _wreath_noise(seed, 14) < 0.5 else -1.0
+        # free-floating bob: small elliptical orbit, own frequencies
+        self.bob = _lerp(2.0, 6.0, _wreath_noise(seed, 15))          # px
+        self.fx = _lerp(0.25, 0.6, _wreath_noise(seed, 16))          # Hz-ish
+        self.fy = _lerp(0.20, 0.5, _wreath_noise(seed, 17))
+
+    def _at(self, frac):
+        if len(self.vine.path) < 2:
+            return None
+        total = self.vine.total_len
+        grown = self.vine.grown
+        if grown <= 0.001:
+            return None
+        d = max(0.0, min(frac, 1.0)) * grown * total
+        for (p, dist) in self.vine.path:
+            if dist >= d:
+                return p
+        return self.vine.path[-1][0]
+
+    def pos_at(self, clock):
+        # eased along-path sway around the anchor + a small floating bob
+        sway = math.sin(clock * self.drift_spd * math.tau + self.phase * 6.28)
+        frac = self.anchor + self.dir * self.span * sway
+        base = self._at(frac)
+        if base is None:
+            return None
+        bx = math.sin(clock * self.fx * math.tau + self.phase * 5.0) * self.bob
+        by = math.cos(clock * self.fy * math.tau + self.phase * 7.0) * self.bob
+        return QPointF(base.x() + bx, base.y() + by)
+
+    def trail_at(self, clock, n=4, gap=0.05):
+        # short trail = recent positions (a touch in the past)
+        out = []
+        for i in range(1, n + 1):
+            p = self.pos_at(clock - i * gap)
+            if p is not None:
+                out.append(p)
+        return out
+
+
+class VineBorder(QWidget):
+    """Transparent, click-through overlay drawn on top of the content: the woven
+    vine wreath + drifting motes. See the module comment above for the perf
+    model (cached static layer, paused when hidden)."""
+
+    BAND = 95
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setAttribute(Qt.WA_TransparentForMouseEvents)
+        self.setAttribute(Qt.WA_NoSystemBackground)
+        self.vines = []
+        self.motes = []
+        self._clock = 0.0
+        self._static = None          # cached pixmap of vignette + vines
+        self._static_dirty = True
+        self.DT = 1 / 60.0
+        self._timer = QTimer(self)
+        self._timer.timeout.connect(self._tick)
+        self._timer.start(16)        # ~60 fps
+
+    # The host window calls pause()/resume() on minimise / hide-to-tray, since a
+    # child widget doesn't reliably get hideEvent on window-minimise.
+    def pause(self):
+        if self._timer.isActive():
+            self._timer.stop()
+
+    def resume(self):
+        if not self._timer.isActive():
+            self._timer.start(16)
+
+    def hideEvent(self, e):
+        self.pause()
+        super().hideEvent(e)
+
+    def showEvent(self, e):
+        self.resume()
+        super().showEvent(e)
+
+    def _tick(self):
+        self._clock += self.DT
+        growing = False
+        for v in self.vines:
+            before = v.grown
+            v.step(self.DT)
+            if abs(v.grown - before) > 1e-5:
+                growing = True
+        if growing:
+            self._static_dirty = True
+        # motes derive their position from self._clock directly (ambient wander),
+        # so there's no per-mote state to advance here.
+        self.update()
+
+    def _rebuild(self):
+        w, h = self.width(), self.height()
+        self.vines = []
+        self.motes = []
+        band = self.BAND
+        inset = band * 0.42        # ring sits in the OUTER part of the band
+        base_pts, _total = _perimeter_path(w, h, inset, 46)
+        seed = 1
+        # 2 bold gnarled ropes as backbone, thinner wiry vines woven around them
+        loop_specs = [
+            dict(width=13.0, amp=0.62, leafy=0.5, gnarl=True),
+            dict(width=11.0, amp=0.85, leafy=0.6, gnarl=True),
+            dict(width=5.0,  amp=1.0,  leafy=1.0),
+            dict(width=4.0,  amp=1.1,  leafy=1.1),
+            dict(width=5.5,  amp=0.55, leafy=0.7),
+        ]
+        for spec in loop_specs:
+            v = _RingVine(base_pts, band, seed, start_frac=_wreath_noise(seed, 1),
+                          coverage=1.0, **spec)
+            v.set_target(1.0); self.vines.append(v); seed += 1
+        # partial wander vines for extra gnarl
+        for _k in range(4):
+            v = _RingVine(base_pts, band, seed, start_frac=_wreath_noise(seed, 2),
+                          coverage=_lerp(0.25, 0.5, _wreath_noise(seed, 3)),
+                          width=4.0, amp=1.2, leafy=1.2)
+            v.set_target(1.0); self.vines.append(v); seed += 1
+        # Motes scattered among the vines at varied anchor points; ~1 in 3 a
+        # faint blue one. Each wanders independently (see _Mote), so the field
+        # feels ambient rather than circulating.
+        for v in self.vines[:6]:
+            for k in range(2):
+                ms = seed * 7 + k
+                blue = (_wreath_noise(ms, 5) < 0.34)
+                anchor = _wreath_noise(ms, 9)        # spread along the vine
+                self.motes.append(_Mote(v, anchor, ms, blue=blue))
+                seed += 1
+        self._static_dirty = True
+
+    def resizeEvent(self, e):
+        prev = [v.grown for v in self.vines]
+        self._rebuild()
+        for v, g in zip(self.vines, prev):
+            v.grown = g
+        self._static = None
+        self._static_dirty = True
+        super().resizeEvent(e)
+
+    def _vignette(self, qp):
+        w, h = self.width(), self.height()
+        band = int(self.BAND * 1.15)
+        dark = QColor(0, 0, 0, 165)
+        clear = QColor(0, 0, 0, 0)
+        g = QLinearGradient(0, 0, 0, band); g.setColorAt(0, dark); g.setColorAt(1, clear)
+        qp.fillRect(0, 0, w, band, QBrush(g))
+        g = QLinearGradient(0, h, 0, h - band); g.setColorAt(0, dark); g.setColorAt(1, clear)
+        qp.fillRect(0, h - band, w, band, QBrush(g))
+        g = QLinearGradient(0, 0, band, 0); g.setColorAt(0, dark); g.setColorAt(1, clear)
+        qp.fillRect(0, 0, band, h, QBrush(g))
+        g = QLinearGradient(w, 0, w - band, 0); g.setColorAt(0, dark); g.setColorAt(1, clear)
+        qp.fillRect(w - band, 0, band, h, QBrush(g))
+
+    def _rebuild_static(self):
+        w, h = max(1, self.width()), max(1, self.height())
+        pm = QPixmap(w, h); pm.fill(Qt.transparent)
+        qp = QPainter(pm); qp.setRenderHint(QPainter.Antialiasing, True)
+        self._vignette(qp)
+        for v in self.vines:
+            v.draw(qp)
+        qp.end()
+        self._static = pm
+        self._static_dirty = False
+
+    def paintEvent(self, e):
+        if self._static is None or self._static_dirty:
+            self._rebuild_static()
+        qp = QPainter(self)
+        qp.drawPixmap(0, 0, self._static)
+        qp.setRenderHint(QPainter.Antialiasing, True)
+        for m in self.motes:
+            p = m.pos_at(self._clock)
+            if p is None:
+                continue
+            # slow, gentle twinkle (each mote on its own phase)
+            tw = 0.5 + 0.5 * math.sin(self._clock * 1.3 + m.phase * 6.28)
+            self._mote(qp, p, tw, m.trail_at(self._clock), m.core, m.glow)
+        qp.end()
+
+    def _mote(self, qp, p, tw, trail, core_col, glow_col):
+        for i, tp in enumerate(trail):
+            f = (i + 1) / (len(trail) + 1)
+            tr = (2.0 + 4.0 * tw) * f
+            gc = QColor(glow_col); gc.setAlpha(int(60 * tw * f))
+            qp.setPen(Qt.NoPen); qp.setBrush(QBrush(gc)); qp.drawEllipse(tp, tr, tr)
+        R = 12 * tw + 4
+        g = QRadialGradient(p, R)
+        gc = QColor(glow_col); gc.setAlpha(int(160 * tw)); g.setColorAt(0.0, gc)
+        ge = QColor(glow_col); ge.setAlpha(0); g.setColorAt(1.0, ge)
+        qp.setPen(Qt.NoPen); qp.setBrush(QBrush(g)); qp.drawEllipse(p, R, R)
+        core = QColor(core_col); core.setAlpha(255)
+        qp.setBrush(QBrush(core)); qp.drawEllipse(p, 2.4 * tw + 0.8, 2.4 * tw + 0.8)
+
+
+# --------------------------------------------------------------------------- #
+# The wood panel that paints the burl texture as the window background. The
+# texture is regenerated (and cached) only when the size actually changes, so
+# resizing stays cheap.
+# --------------------------------------------------------------------------- #
+class WoodPanel(QWidget):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._tex = None
+        self._tex_size = None
+
+    def _ensure_tex(self):
+        size = (self.width(), self.height())
+        if size != self._tex_size and size[0] > 0 and size[1] > 0:
+            self._tex = make_burl(size[0], size[1])
+            self._tex_size = size
+
+    def paintEvent(self, e):
+        self._ensure_tex()
+        if self._tex is not None:
+            QPainter(self).drawImage(0, 0, self._tex)
+
+
+# --------------------------------------------------------------------------- #
+# A collapsible section: a clickable wood header with a disclosure triangle and
+# a body widget that hides/shows. Used to fold the Cloud block away.
+# --------------------------------------------------------------------------- #
+class CollapsibleSection(QWidget):
+    def __init__(self, title, expanded=True, parent=None):
+        super().__init__(parent)
+        self._expanded = expanded
+        v = QVBoxLayout(self); v.setContentsMargins(0, 0, 0, 0); v.setSpacing(6)
+
+        self.header = QToolButton()
+        self.header.setObjectName("sectionHeader")
+        self.header.setCheckable(True)
+        self.header.setChecked(expanded)
+        self.header.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
+        self.header.setArrowType(Qt.DownArrow if expanded else Qt.RightArrow)
+        self.header.setText(title)
+        self.header.setCursor(Qt.PointingHandCursor)
+        self.header.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        self.header.clicked.connect(self._toggle)
+        v.addWidget(self.header)
+
+        self.body = QWidget()
+        self.body_layout = QVBoxLayout(self.body)
+        self.body_layout.setContentsMargins(0, 0, 0, 0)
+        self.body_layout.setSpacing(8)
+        self.body.setVisible(expanded)
+        v.addWidget(self.body)
+
+    def addWidget(self, w):
+        self.body_layout.addWidget(w)
+
+    def addLayout(self, l):
+        self.body_layout.addLayout(l)
+
+    def _toggle(self):
+        self._expanded = self.header.isChecked()
+        self.header.setArrowType(Qt.DownArrow if self._expanded else Qt.RightArrow)
+        self.body.setVisible(self._expanded)
+
+
+# --------------------------------------------------------------------------- #
+# Custom wood title bar. The window is frameless (no grey OS chrome), so this
+# bar carries the icon + title, the minimise / close buttons, and window-drag.
+# --------------------------------------------------------------------------- #
+class TitleBar(QWidget):
+    def __init__(self, win, title):
+        super().__init__(win)
+        self._win = win
+        self._drag = None
+        self.setObjectName("titlebar")
+        self.setFixedHeight(34)
+        h = QHBoxLayout(self); h.setContentsMargins(10, 0, 6, 0); h.setSpacing(8)
+
+        self.icon = QLabel(); self.icon.setObjectName("titleicon")
+        self.icon.setPixmap(win._app_icon().pixmap(18, 18))
+        h.addWidget(self.icon)
+
+        self.label = QLabel(title); self.label.setObjectName("titletext")
+        h.addWidget(self.label)
+        h.addStretch(1)
+
+        self.btn_min = QToolButton(); self.btn_min.setObjectName("winbtn")
+        self.btn_min.setText("–"); self.btn_min.setToolTip("Minimise")
+        self.btn_min.clicked.connect(win.showMinimized)
+        h.addWidget(self.btn_min)
+
+        self.btn_close = QToolButton(); self.btn_close.setObjectName("winbtnclose")
+        self.btn_close.setText("✕"); self.btn_close.setToolTip("Close to tray")
+        self.btn_close.clicked.connect(win.close)
+        h.addWidget(self.btn_close)
+
+    # drag the (frameless) window by its title bar
+    def mousePressEvent(self, e):
+        if e.button() == Qt.LeftButton:
+            self._drag = e.globalPosition().toPoint() - self._win.frameGeometry().topLeft()
+            e.accept()
+
+    def mouseMoveEvent(self, e):
+        if self._drag is not None and e.buttons() & Qt.LeftButton:
+            self._win.move(e.globalPosition().toPoint() - self._drag)
+            e.accept()
+
+    def mouseReleaseEvent(self, e):
+        self._drag = None
+
+    def paintEvent(self, e):
+        # darker wood strip with a 1px amber-ish underline
+        qp = QPainter(self)
+        qp.fillRect(self.rect(), QColor(WOOD_DEEP))
+        qp.setPen(QPen(FRAME_WOOD, 1))
+        qp.drawLine(0, self.height() - 1, self.width(), self.height() - 1)
+        qp.end()
+
+
+# --------------------------------------------------------------------------- #
+# A thin QObject that lets background threads (tray, sync workers) marshal work
+# onto the Qt GUI thread via signals -- the Qt-native replacement for the old
+# Tkinter command queue.
+# --------------------------------------------------------------------------- #
+class _Bridge(QObject):
+    status = Signal(str)
+    cloud_totals = Signal(object)
+    synced = Signal()
+    sync_done = Signal()
+    show = Signal()
+    push = Signal()
+    quit = Signal()
+
+
+# Column model shared by the device + cloud tables.
+_METRIC_COLS = ("keystrokes", "words", "deletions", "alt_tabs", "power_cycles")
+_METRIC_HDRS = {"keystrokes": "Keys", "words": "Words", "deletions": "Del",
+                "alt_tabs": "Alt-Tab", "power_cycles": "Cycles"}
+
+
+def _qss():
+    """The warm dark-wood stylesheet. Tables stay light (parchment) as readable
+    'pages'; everything around them is wood and amber."""
+    return f"""
+    /* root + page are transparent so the burl WoodPanel shows through */
+    QMainWindow {{ background: {WOOD_DEEP}; }}
+    QWidget#root, QWidget#page {{ background: transparent; }}
+    QScrollArea {{ background: transparent; border: none; }}
+    QScrollArea > QWidget > QWidget {{ background: transparent; }}
+    QLabel {{ color: {AMBER}; background: transparent; }}
+    QLabel#dim {{ color: {AMBER_DIM}; }}
+    QLabel#path {{ color: {INK_SOFT}; }}
+    QLabel#heading {{ color: {AMBER}; font-size: 12pt; font-weight: bold; }}
+    QLabel#sub {{ color: {AMBER_DIM}; font-size: 8pt; }}
+    QLabel#status {{
+        color: {PARCHMENT}; background: {WOOD_DEEP};
+        border-top: 1px solid {FRAME_WOOD.name()}; padding: 4px 8px;
+    }}
+    /* custom title bar */
+    QLabel#titletext {{ color: {AMBER}; font-weight: bold; }}
+    QToolButton#winbtn, QToolButton#winbtnclose {{
+        color: {AMBER}; background: transparent; border: none;
+        border-radius: 4px; min-width: 26px; min-height: 22px; font-size: 12pt;
+    }}
+    QToolButton#winbtn:hover {{ background: {WOOD_MID}; color: {PARCHMENT}; }}
+    QToolButton#winbtnclose:hover {{ background: #7a2f22; color: {PARCHMENT}; }}
+    /* collapsible section header */
+    QToolButton#sectionHeader {{
+        color: {AMBER}; background: {WOOD_DARK}; border: 1px solid {WOOD_MID};
+        border-radius: 6px; padding: 6px 8px; font-size: 12pt; font-weight: bold;
+        text-align: left;
+    }}
+    QToolButton#sectionHeader:hover {{ background: {WOOD_MID}; }}
+    /* cards: translucent dark so the burl shows faintly but text stays readable */
+    QFrame#card {{
+        background: rgba(20, 13, 8, 170); border: 1px solid {WOOD_MID};
+        border-radius: 8px;
+    }}
+    QFrame[hline="true"] {{ background: {WOOD_MID}; max-height: 1px; border: none; }}
+    QLineEdit {{
+        background: {PARCHMENT}; color: {INK}; border: 1px solid {WOOD_MID};
+        border-radius: 4px; padding: 4px 6px; selection-background-color: {AMBER_DIM};
+    }}
+    QPushButton {{
+        background: {WOOD_MID}; color: {AMBER}; border: 1px solid {WOOD_LIGHT};
+        border-radius: 5px; padding: 5px 12px;
+    }}
+    QPushButton:hover {{ background: {WOOD_LIGHT}; color: {PARCHMENT}; }}
+    QPushButton:pressed {{ background: {WOOD_DARK}; }}
+    QCheckBox {{ color: {AMBER}; background: transparent; spacing: 6px; }}
+    QCheckBox::indicator {{
+        width: 15px; height: 15px; border: 1px solid {WOOD_LIGHT};
+        border-radius: 3px; background: {WOOD_DEEP};
+    }}
+    QCheckBox::indicator:checked {{ background: {AMBER}; border: 1px solid {AMBER}; }}
+    QTreeWidget {{
+        background: {PARCHMENT}; alternate-background-color: {PARCHMENT_2};
+        color: {INK}; border: 1px solid {WOOD_MID}; border-radius: 6px;
+        outline: 0; gridline-color: #d8c69e;
+    }}
+    QTreeWidget::item {{ padding: 3px 2px; border: none; }}
+    QHeaderView::section {{
+        background: {WOOD_MID}; color: {AMBER}; padding: 5px 6px;
+        border: none; border-right: 1px solid {WOOD_DARK}; font-weight: bold;
+    }}
+    QScrollBar:vertical {{ background: {WOOD_DEEP}; width: 11px; margin: 0; }}
+    QScrollBar::handle:vertical {{ background: {WOOD_MID}; border-radius: 5px; min-height: 24px; }}
+    QScrollBar::handle:vertical:hover {{ background: {WOOD_LIGHT}; }}
+    QScrollBar::add-line, QScrollBar::sub-line {{ height: 0; }}
+    QToolTip {{ background: {WOOD_DARK}; color: {PARCHMENT}; border: 1px solid {AMBER_DIM}; }}
+    """
+
+
+class App(QMainWindow):
+    WINDOW_ROWS = ("Last hour", "Last day", "Last week", "Last month",
+                   "Last year", "All-time")
+
     def __init__(self, store, counter, cfg, start_minimized=False,
                  first_run=False, writable=True):
+        super().__init__()
         self.store = store
         self.counter = counter
         self.cfg = cfg
-        self.cmd_q = queue.Queue()  # tray/worker threads -> Tk thread
-        self.tray = None
         self.running = True
         self._sync_in_flight = False
+        self.tray = None
+        self._first_run = first_run
+        self._writable = writable
 
-        self.root = tk.Tk()
-        self.root.title(APP_DISPLAY_NAME)
-        self.root.geometry("560x1040")
-        self.root.minsize(540, 760)
+        self.bridge = _Bridge()
+        self.bridge.status.connect(self.set_status)
+        self.bridge.cloud_totals.connect(self._render_cloud)
+        self.bridge.synced.connect(self._on_synced)
+        self.bridge.sync_done.connect(lambda: setattr(self, "_sync_in_flight", False))
+        self.bridge.show.connect(self.show_window)
+        self.bridge.push.connect(self.on_push)
+        self.bridge.quit.connect(self.quit_app)
+
+        self.setWindowTitle(APP_DISPLAY_NAME)
+        self.setWindowIcon(self._app_icon())
+        # Frameless: we draw our own wood title bar instead of the grey OS one.
+        self.setWindowFlag(Qt.FramelessWindowHint, True)
+        self.resize(580, 1040)
+        self.setMinimumSize(540, 720)
+        self.setStyleSheet(_qss())
         self._build_ui()
-        self.root.protocol("WM_DELETE_WINDOW", self.hide_window)
+
+        # The vine border floats over the content (click-through). Z-order:
+        # content < border < title bar, so the app name + window controls stay
+        # visible above the vines, and the border is geometry-offset to start
+        # just below the title bar.
+        self.border = VineBorder(self)
+        self._position_border()
+        self.border.raise_()
+        self.titlebar.raise_()
+
+        # App-wide event filter drives frameless edge/corner resizing; it must
+        # see mouse moves/presses before child widgets consume them.
+        self.setMouseTracking(True)
+        QApplication.instance().installEventFilter(self)
 
         if HAVE_TRAY:
             self._start_tray()
-            if start_minimized:
-                self.root.withdraw()
 
-        self._tick()
-        self._poll_commands()
-        self._autosave()
-        self.root.after(INITIAL_SYNC_MS, self._autosync)  # first sync, then every 15 min
+        # periodic loops, all on the Qt event loop
+        self._tick();             self._tick_timer = self._every(1000, self._tick)
+        self._autosave();         self._save_timer = self._every(5000, self._autosave)
+        QTimer.singleShot(INITIAL_SYNC_MS, self._autosync)
 
-        # Startup notices (after the window has had a moment to draw).
+        if start_minimized and HAVE_TRAY:
+            QTimer.singleShot(0, self.hide)
+        else:
+            self.show()
+
         if not writable:
-            self.root.after(300, self._warn_not_writable)
+            QTimer.singleShot(300, self._warn_not_writable)
         elif first_run:
-            self.root.after(300, self._show_welcome)
+            QTimer.singleShot(300, self._show_welcome)
+
+    # -- small helpers ------------------------------------------------------ #
+    def _every(self, ms, fn):
+        t = QTimer(self)
+        t.timeout.connect(fn)
+        t.start(ms)
+        return t
+
+    def _app_icon(self):
+        pm = QPixmap(64, 64)
+        pm.fill(QColor(WOOD_DEEP))
+        qp = QPainter(pm)
+        qp.setRenderHint(QPainter.Antialiasing, True)
+        qp.setPen(QPen(QColor(AMBER), 3))
+        qp.drawRoundedRect(10, 16, 44, 32, 6, 6)
+        f = QFont("Georgia", 20, QFont.Bold)
+        qp.setFont(f)
+        qp.setPen(QColor(AMBER))
+        qp.drawText(pm.rect(), Qt.AlignCenter, "T")
+        qp.end()
+        return QIcon(pm)
+
+    def _heading(self, text):
+        lab = QLabel(text); lab.setObjectName("heading")
+        return lab
+
+    def _hline(self):
+        ln = QFrame(); ln.setProperty("hline", True); ln.setFixedHeight(1)
+        return ln
+
+    def _make_metric_tree(self, first_col, height_rows):
+        tv = QTreeWidget()
+        tv.setColumnCount(1 + len(_METRIC_COLS))
+        tv.setHeaderLabels([first_col] + [_METRIC_HDRS[c] for c in _METRIC_COLS])
+        tv.setRootIsDecorated(False)
+        tv.setAlternatingRowColors(True)
+        tv.setSelectionMode(QAbstractItemView.NoSelection)
+        tv.setFocusPolicy(Qt.NoFocus)
+        tv.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        tv.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        hdr = tv.header()
+        hdr.setStretchLastSection(False)
+        # The name column flexes with the window; the five metric columns keep a
+        # fixed width so their numbers are never clipped at narrow sizes.
+        hdr.setSectionResizeMode(0, QHeaderView.Stretch)
+        for i in range(1, 1 + len(_METRIC_COLS)):
+            hdr.setSectionResizeMode(i, QHeaderView.Fixed)
+            tv.setColumnWidth(i, 62)
+            tv.headerItem().setTextAlignment(i, Qt.AlignRight | Qt.AlignVCenter)
+        row_h = 24
+        tv.setFixedHeight(height_rows * row_h + 30)
+        return tv
 
     # -- layout ------------------------------------------------------------- #
-    WINDOW_ROWS = ("Last hour", "Last day", "Last week", "Last month", "Last year", "All-time")
-
     def _build_ui(self):
-        pad = {"padx": 10}
+        # The central panel paints the burl-wood texture; everything else is
+        # transparent and sits on top of it.
+        root = WoodPanel(); root.setObjectName("root")
+        self.setCentralWidget(root)
+        outer = QVBoxLayout(root); outer.setContentsMargins(0, 0, 0, 0); outer.setSpacing(0)
 
-        # Start date + days-since header
-        self.since_lbl = ttk.Label(self.root, text="", font=("Segoe UI", 10, "bold"))
-        self.since_lbl.pack(anchor="w", pady=(8, 2), **pad)
+        # custom wood title bar (replaces the grey OS title bar)
+        self.titlebar = TitleBar(self, APP_DISPLAY_NAME)
+        outer.addWidget(self.titlebar)
 
-        # This-device breakdown table: one row per time window, five metric columns.
-        ttk.Label(self.root, text="This device", font=("Segoe UI", 11, "bold")).pack(anchor="w", **pad)
-        cols = ("keystrokes", "words", "deletions", "alt_tabs", "power_cycles")
-        headers = {"keystrokes": "Keys", "words": "Words", "deletions": "Del",
-                   "alt_tabs": "Alt-Tab", "power_cycles": "Cycles"}
-        blank_row = tuple("0" for _ in cols)
-        tv = ttk.Treeview(self.root, columns=("window",) + cols, show="headings",
-                          height=len(self.WINDOW_ROWS), selectmode="none")
-        tv.heading("window", text="Window")
-        tv.column("window", width=92, anchor="w", stretch=False)
-        for c in cols:
-            tv.heading(c, text=headers[c])
-            tv.column(c, width=72, anchor="e", stretch=True)
+        # scrollable content, inset so vines have a clear band around the edges
+        scroll = QScrollArea(); scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.NoFrame)
+        outer.addWidget(scroll, 1)
+
+        page = QWidget(); page.setObjectName("page")
+        scroll.setWidget(page)
+        col = QVBoxLayout(page)
+        # Content is inset clear of the ~95px woven-vine band so the wreath
+        # frames the page without overlapping the tables.
+        col.setContentsMargins(58, 64, 58, 48)
+        col.setSpacing(8)
+
+        # days-since header
+        self.since_lbl = QLabel(""); self.since_lbl.setStyleSheet(
+            f"color:{AMBER}; font-size:11pt; font-weight:bold;")
+        col.addWidget(self.since_lbl)
+
+        # This device
+        col.addWidget(self._heading("This device"))
+        self.tree = self._make_metric_tree("Window", len(self.WINDOW_ROWS))
         for name in self.WINDOW_ROWS:
-            tv.insert("", "end", iid=name, values=(name,) + blank_row)
-        tv.pack(fill="x", **pad)
-        self.tree = tv
+            it = QTreeWidgetItem([name] + ["0"] * len(_METRIC_COLS))
+            for i in range(1, 1 + len(_METRIC_COLS)):
+                it.setTextAlignment(i, Qt.AlignRight | Qt.AlignVCenter)
+            self.tree.addTopLevelItem(it)
+        self._device_items = {self.tree.topLevelItem(i).text(0): self.tree.topLevelItem(i)
+                              for i in range(self.tree.topLevelItemCount())}
+        col.addWidget(self.tree)
 
-        ttk.Separator(self.root).pack(fill="x", pady=8, **pad)
-        ttk.Label(self.root, text="Cloud \u2014 all devices", font=("Segoe UI", 11, "bold")).pack(anchor="w", **pad)
+        col.addWidget(self._hline())
 
-        # One row per device (this device's row is highlighted), plus a bold
-        # combined "Cloud total" row. Repopulated on every sync.
-        ctv = ttk.Treeview(self.root, columns=("device",) + cols, show="headings",
-                           height=2, selectmode="none")
-        ctv.heading("device", text="Device")
-        ctv.column("device", width=150, anchor="w", stretch=True)
-        for c in cols:
-            ctv.heading(c, text=headers[c])
-            ctv.column(c, width=64, anchor="e", stretch=True)
-        ctv.tag_configure("total", font=("Segoe UI", 9, "bold"))
-        ctv.tag_configure("self", foreground="#1a7f37")
-        ctv.pack(fill="x", **pad)
-        self.cloud_tree = ctv
-        ctv.insert("", "end", values=("Not synced yet",) + tuple("" for _ in cols))
-
-        self.sync_lbl = ttk.Label(self.root, text="Last cloud sync: never", anchor="w")
-        self.sync_lbl.pack(fill="x", pady=(2, 0), **pad)
-
-        # Cloud connection settings
-        cf = ttk.Frame(self.root); cf.pack(fill="x", pady=(6, 0), **pad)
-        ttk.Label(cf, text="Worker URL").grid(row=0, column=0, sticky="w")
-        self.e_url = ttk.Entry(cf, width=40)
-        self.e_url.grid(row=1, column=0, sticky="we")
-        self.e_url.insert(0, self.cfg.data.get("endpoint", ""))
-        ttk.Label(cf, text="API key").grid(row=2, column=0, sticky="w", pady=(4, 0))
-        self.e_key = ttk.Entry(cf, width=40, show="\u2022")
-        self.e_key.grid(row=3, column=0, sticky="we")
-        self.e_key.insert(0, self.cfg.data.get("api_key", ""))
-        ttk.Button(cf, text="Save", command=self.save_cfg).grid(row=4, column=0, sticky="w", pady=4)
-
-        bf = ttk.Frame(self.root); bf.pack(fill="x", **pad)
-        ttk.Button(bf, text="Push to Cloud", command=self.on_push).pack(side="left")
-        ttk.Button(bf, text="Refresh total", command=self.on_refresh).pack(side="left", padx=6)
-
-        self.autosync_var = tk.BooleanVar(value=self.cfg.autosync)
-        ttk.Checkbutton(
-            self.root, text="Auto-sync to cloud every 15 min",
-            variable=self.autosync_var, command=self.toggle_autosync,
-        ).pack(anchor="w", pady=(6, 0), **pad)
-
-        # Install / data location. Autostart is what breaks if this folder moves,
-        # so make the location visible and offer a one-click way to open it.
-        ttk.Separator(self.root).pack(fill="x", pady=8, **pad)
-        ttk.Label(self.root, text="This app and its data live here (delete the folder to uninstall):",
-                  font=("Segoe UI", 9)).pack(anchor="w", **pad)
-        self.path_lbl = ttk.Label(self.root, text=app_dir(), foreground="#555",
-                                   wraplength=455, justify="left", font=("Segoe UI", 9))
-        self.path_lbl.pack(anchor="w", **pad)
-
-        row = ttk.Frame(self.root); row.pack(fill="x", pady=(4, 0), **pad)
-        ttk.Button(row, text="Open folder", command=self.open_folder).pack(side="left")
-        self.autostart_var = tk.BooleanVar(value=autostart_enabled())
-        ttk.Checkbutton(row, text="Start at login", variable=self.autostart_var,
-                        command=self.toggle_autostart).pack(side="left", padx=10)
-        ttk.Label(self.root,
-                  text="Moving this folder breaks auto-start \u2014 re-tick \u201cStart at login\u201d to fix it.",
-                  foreground="#777", font=("Segoe UI", 8),
-                  wraplength=455, justify="left").pack(anchor="w", **pad)
-
-        # How your all-time words stack up against Tolkien's works.
-        ttk.Separator(self.root).pack(fill="x", pady=8, **pad)
-        ttk.Label(self.root, text="Words vs. Tolkien (all-time)",
-                  font=("Segoe UI", 11, "bold")).pack(anchor="w", **pad)
-        bcols = ("total", "pct", "left")
-        bheaders = {"total": "Book total", "pct": "% written", "left": "Words to go"}
-        btv = ttk.Treeview(self.root, columns=("book",) + bcols, show="headings",
-                           height=len(BOOK_WORD_COUNTS), selectmode="none")
-        btv.heading("book", text="Work")
-        btv.column("book", width=210, anchor="w", stretch=True)
-        for c in bcols:
-            btv.heading(c, text=bheaders[c])
-            btv.column(c, width=96, anchor="e", stretch=True)
-        btv.tag_configure("aggregate", font=("Segoe UI", 9, "bold"))
-        btv.tag_configure("done", foreground="#1a7f37")
+        # Words vs Tolkien  --  promoted to sit right under This device
+        col.addWidget(self._heading("Words vs. Tolkien (all-time)"))
+        self.books_tree = QTreeWidget()
+        self.books_tree.setColumnCount(4)
+        self.books_tree.setHeaderLabels(["Work", "Book total", "% written", "Words to go"])
+        self.books_tree.setRootIsDecorated(False)
+        self.books_tree.setAlternatingRowColors(True)
+        self.books_tree.setSelectionMode(QAbstractItemView.NoSelection)
+        self.books_tree.setFocusPolicy(Qt.NoFocus)
+        self.books_tree.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.books_tree.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        bh = self.books_tree.header()
+        bh.setSectionResizeMode(0, QHeaderView.Stretch)
+        for i in (1, 2, 3):
+            bh.setSectionResizeMode(i, QHeaderView.ResizeToContents)
+            self.books_tree.headerItem().setTextAlignment(i, Qt.AlignRight | Qt.AlignVCenter)
+        self._book_items = {}
         for title, count, is_agg in BOOK_WORD_COUNTS:
-            btv.insert("", "end", iid=title,
-                       tags=("aggregate",) if is_agg else (),
-                       values=(title, f"{count:,}", "0.0%", f"{count:,}"))
-        btv.pack(fill="x", **pad)
-        self.books_tree = btv
+            it = QTreeWidgetItem([title, f"{count:,}", "0.0%", f"{count:,}"])
+            for i in (1, 2, 3):
+                it.setTextAlignment(i, Qt.AlignRight | Qt.AlignVCenter)
+            if is_agg:
+                f = it.font(0); f.setBold(True)
+                for c in range(4):
+                    it.setFont(c, f)
+            self.books_tree.addTopLevelItem(it)
+            self._book_items[title] = it
+        self.books_tree.setFixedHeight(len(BOOK_WORD_COUNTS) * 24 + 30)
+        col.addWidget(self.books_tree)
 
-        self.status = ttk.Label(self.root, text="Counting\u2026", relief="sunken", anchor="w")
-        self.status.pack(fill="x", side="bottom")
+        col.addWidget(self._hline())
 
-    # -- helpers ------------------------------------------------------------ #
+        # Cloud - all devices  --  collapsible
+        cloud = CollapsibleSection("Cloud — all devices", expanded=self.cfg.cloud_expanded)
+        self.cloud_section = cloud
+        cloud.header.clicked.connect(self._save_cloud_expanded)
+        col.addWidget(cloud)
+
+        self.cloud_tree = self._make_metric_tree("Device", 3)
+        self.cloud_tree.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        placeholder = QTreeWidgetItem(["Not synced yet"] + [""] * len(_METRIC_COLS))
+        self.cloud_tree.addTopLevelItem(placeholder)
+        cloud.addWidget(self.cloud_tree)
+
+        self.sync_lbl = QLabel("Last cloud sync: never"); self.sync_lbl.setObjectName("dim")
+        cloud.addWidget(self.sync_lbl)
+
+        # Cloud config card
+        card = QFrame(); card.setObjectName("card")
+        cg = QGridLayout(card); cg.setContentsMargins(12, 10, 12, 12); cg.setSpacing(6)
+        cg.addWidget(QLabel("Worker URL"), 0, 0, 1, 2)
+        self.e_url = QLineEdit(self.cfg.data.get("endpoint", ""))
+        cg.addWidget(self.e_url, 1, 0, 1, 2)
+        cg.addWidget(QLabel("API key"), 2, 0, 1, 2)
+        self.e_key = QLineEdit(self.cfg.data.get("api_key", ""))
+        self.e_key.setEchoMode(QLineEdit.Password)
+        cg.addWidget(self.e_key, 3, 0, 1, 2)
+        save_btn = QPushButton("Save"); save_btn.clicked.connect(self.save_cfg)
+        cg.addWidget(save_btn, 4, 0, alignment=Qt.AlignLeft)
+        cloud.addWidget(card)
+
+        # push / refresh row + autosync
+        bf = QHBoxLayout()
+        push_btn = QPushButton("Push to Cloud"); push_btn.clicked.connect(self.on_push)
+        refresh_btn = QPushButton("Refresh total"); refresh_btn.clicked.connect(self.on_refresh)
+        bf.addWidget(push_btn); bf.addWidget(refresh_btn); bf.addStretch(1)
+        cloud.addLayout(bf)
+
+        self.autosync_chk = QCheckBox("Auto-sync to cloud every 15 min")
+        self.autosync_chk.setChecked(self.cfg.autosync)
+        self.autosync_chk.toggled.connect(self.toggle_autosync)
+        cloud.addWidget(self.autosync_chk)
+
+        col.addWidget(self._hline())
+
+        # install / data location
+        loc = QLabel("This app and its data live here (delete the folder to uninstall):")
+        loc.setObjectName("dim"); loc.setWordWrap(True)
+        col.addWidget(loc)
+        self.path_lbl = QLabel(app_dir()); self.path_lbl.setObjectName("path")
+        self.path_lbl.setWordWrap(True)
+        col.addWidget(self.path_lbl)
+
+        row = QHBoxLayout()
+        open_btn = QPushButton("Open folder"); open_btn.clicked.connect(self.open_folder)
+        self.autostart_chk = QCheckBox("Start at login")
+        self.autostart_chk.setChecked(autostart_enabled())
+        self.autostart_chk.toggled.connect(self.toggle_autostart)
+        row.addWidget(open_btn); row.addWidget(self.autostart_chk); row.addStretch(1)
+        col.addLayout(row)
+
+        warn = QLabel("Moving this folder breaks auto-start — re-tick “Start at login” to fix it.")
+        warn.setObjectName("sub"); warn.setWordWrap(True)
+        col.addWidget(warn)
+        col.addStretch(1)
+
+        # status bar (outside the scroll area, full width)
+        self.status = QLabel("Counting…"); self.status.setObjectName("status")
+        outer.addWidget(self.status)
+
+    # -- vine border tracks the window size --------------------------------- #
+    def _position_border(self):
+        # Border covers everything below the title bar, so the wreath frames the
+        # content area while the title bar (name + controls) stays clear on top.
+        top = self.titlebar.height() if hasattr(self, "titlebar") else 0
+        self.border.setGeometry(0, top, self.width(), self.height() - top)
+
+    def resizeEvent(self, e):
+        if hasattr(self, "border"):
+            self._position_border()
+            self.border.raise_()
+            self.titlebar.raise_()
+        super().resizeEvent(e)
+
+    # -- frameless window resize ------------------------------------------- #
+    # We use Qt's startSystemResize() (the supported way to resize a frameless
+    # window), driven by an application-wide event filter so that mouse moves /
+    # presses in the outer edge band are caught even though child widgets (the
+    # scroll area, tables) would otherwise consume them. The cursor shape is set
+    # on hover; a press in the band starts the native resize drag.
+    _RESIZE_MARGIN = 8
+
+    def _edges_at(self, pos):
+        """Return the Qt.Edges under a window-local point, or None if not in
+        the resize band."""
+        m = self._RESIZE_MARGIN
+        w, h = self.width(), self.height()
+        x, y = pos.x(), pos.y()
+        edges = Qt.Edges()
+        if x <= m:           edges |= Qt.LeftEdge
+        if x >= w - m:       edges |= Qt.RightEdge
+        if y <= m:           edges |= Qt.TopEdge
+        if y >= h - m:       edges |= Qt.BottomEdge
+        return edges if edges else None
+
+    @staticmethod
+    def _cursor_for(edges):
+        horizontal = (Qt.LeftEdge | Qt.RightEdge)
+        vertical = (Qt.TopEdge | Qt.BottomEdge)
+        tl_br = (Qt.LeftEdge | Qt.TopEdge, Qt.RightEdge | Qt.BottomEdge)
+        tr_bl = (Qt.RightEdge | Qt.TopEdge, Qt.LeftEdge | Qt.BottomEdge)
+        if edges in tl_br:   return Qt.SizeFDiagCursor
+        if edges in tr_bl:   return Qt.SizeBDiagCursor
+        if edges & horizontal and not (edges & vertical):  return Qt.SizeHorCursor
+        if edges & vertical and not (edges & horizontal):  return Qt.SizeVerCursor
+        return Qt.ArrowCursor
+
+    def eventFilter(self, obj, event):
+        et = event.type()
+        if et in (QEvent.MouseMove, QEvent.MouseButtonPress,
+                  QEvent.HoverMove) and not self.isMaximized():
+            # global position -> this window's local coords
+            gp = event.globalPosition().toPoint() if hasattr(event, "globalPosition") \
+                else QCursor.pos()
+            local = self.mapFromGlobal(gp)
+            if self.rect().contains(local):
+                edges = self._edges_at(local)
+                if et in (QEvent.MouseMove, QEvent.HoverMove):
+                    if edges:
+                        self.setCursor(self._cursor_for(edges))
+                    elif self.cursor().shape() != Qt.ArrowCursor:
+                        self.unsetCursor()
+                elif et == QEvent.MouseButtonPress and edges:
+                    if event.button() == Qt.LeftButton:
+                        wh = self.windowHandle()
+                        if wh is not None:
+                            wh.startSystemResize(edges)
+                            return True  # consume so children don't react
+        return super().eventFilter(obj, event)
+
+    # -- status / misc ------------------------------------------------------ #
     def set_status(self, msg):
-        self.status.config(text=msg)
+        self.status.setText(msg)
 
     def open_folder(self):
         try:
-            os.startfile(app_dir())  # Windows
+            os.startfile(app_dir())
         except Exception as e:
             self.set_status(f"Couldn't open folder: {e}")
 
     def _show_welcome(self):
-        try:
-            self.root.deiconify(); self.root.lift()
-        except Exception:
-            pass
-        messagebox.showinfo(
-            APP_DISPLAY_NAME,
+        self.show_window()
+        QMessageBox.information(
+            self, APP_DISPLAY_NAME,
             "This tool saves all data in the folder you've installed it in. "
             "To uninstall, just delete everything.\n\n"
             "This tool runs offline and standalone, but can tally totals across "
@@ -654,53 +1591,51 @@ class App:
         )
 
     def _warn_not_writable(self):
-        try:
-            self.root.deiconify(); self.root.lift()
-        except Exception:
-            pass
-        messagebox.showwarning(
-            APP_DISPLAY_NAME,
+        self.show_window()
+        QMessageBox.warning(
+            self, APP_DISPLAY_NAME,
             "Tallyton can't save data in its current folder:\n\n"
             f"{app_dir()}\n\n"
-            "It needs to live somewhere writable \u2014 a normal folder, your Desktop, "
+            "It needs to live somewhere writable — a normal folder, your Desktop, "
             "or a USB drive, but not Program Files or a read-only location. Move the "
             "whole folder somewhere writable and start it again.",
         )
 
     def save_cfg(self):
-        self.cfg.data["endpoint"] = self.e_url.get().strip()
-        self.cfg.data["api_key"] = self.e_key.get().strip()
+        self.cfg.data["endpoint"] = self.e_url.text().strip()
+        self.cfg.data["api_key"] = self.e_key.text().strip()
         self.cfg.save()
         self.set_status("Settings saved.")
 
-    def toggle_autostart(self):
+    def toggle_autostart(self, checked):
         try:
-            set_autostart(self.autostart_var.get())
-            self.set_status("Autostart " + ("enabled." if self.autostart_var.get() else "disabled."))
+            set_autostart(checked)
+            self.set_status("Autostart " + ("enabled." if checked else "disabled."))
         except Exception as e:
-            messagebox.showerror(APP_DISPLAY_NAME, f"Could not change autostart:\n{e}")
-            self.autostart_var.set(autostart_enabled())
+            QMessageBox.critical(self, APP_DISPLAY_NAME, f"Could not change autostart:\n{e}")
+            self.autostart_chk.blockSignals(True)
+            self.autostart_chk.setChecked(autostart_enabled())
+            self.autostart_chk.blockSignals(False)
 
+    # -- cloud sync (threads marshal back via self.bridge) ------------------ #
     def on_push(self):
-        # Manual "Push to Cloud" = push this device's totals, then pull everyone's.
         self._sync_now("manual")
 
     def on_refresh(self):
-        # Pull-only: refresh the cloud table without pushing.
         if not (self.cfg.endpoint and self.cfg.api_key):
             self.set_status("Set the Worker URL and API key first.")
             return
-        self.set_status("Fetching cloud totals\u2026")
+        self.set_status("Fetching cloud totals…")
 
         def work():
             try:
                 totals = fetch_cloud_totals(self.cfg)
-                self.cmd_q.put(("cloud_totals", totals))
-                self.cmd_q.put(("status", "Cloud totals updated."))
+                self.bridge.cloud_totals.emit(totals)
+                self.bridge.status.emit("Cloud totals updated.")
             except urllib.error.HTTPError as e:
-                self.cmd_q.put(("status", f"Fetch failed: HTTP {e.code}"))
+                self.bridge.status.emit(f"Fetch failed: HTTP {e.code}")
             except Exception as e:
-                self.cmd_q.put(("status", f"Fetch failed: {e}"))
+                self.bridge.status.emit(f"Fetch failed: {e}")
 
         threading.Thread(target=work, daemon=True).start()
 
@@ -711,33 +1646,43 @@ class App:
             return
         if self._sync_in_flight:
             if reason == "manual":
-                self.set_status("Sync already in progress\u2026")
+                self.set_status("Sync already in progress…")
             return
         self._sync_in_flight = True
-        self.set_status("Syncing\u2026")
+        self.set_status("Syncing…")
 
         def work():
             try:
                 self.store.save()
-                push_to_cloud(self.store, self.cfg)    # push this device's history
-                totals = fetch_cloud_totals(self.cfg)  # pull all devices' totals
-                self.cmd_q.put(("cloud_totals", totals))
-                self.cmd_q.put(("synced", None))
+                push_to_cloud(self.store, self.cfg)
+                totals = fetch_cloud_totals(self.cfg)
+                self.bridge.cloud_totals.emit(totals)
+                self.bridge.synced.emit()
             except urllib.error.HTTPError as e:
-                self.cmd_q.put(("status", f"Sync failed: HTTP {e.code}"))
+                self.bridge.status.emit(f"Sync failed: HTTP {e.code}")
             except Exception as e:
-                self.cmd_q.put(("status", f"Sync failed: {e}"))
+                self.bridge.status.emit(f"Sync failed: {e}")
             finally:
-                self.cmd_q.put(("sync_done", None))
+                self.bridge.sync_done.emit()
 
         threading.Thread(target=work, daemon=True).start()
+
+    def _on_synced(self):
+        now = dt.datetime.now().strftime("%H:%M:%S")
+        self.sync_lbl.setText(f"Last cloud sync: {now}")
+        self.set_status("Synced.")
+
+    def _save_cloud_expanded(self):
+        # Persist the Cloud section's open/closed state across launches.
+        self.cfg.data["cloud_expanded"] = bool(self.cloud_section._expanded)
+        self.cfg.save()
 
     def _render_cloud(self, totals):
         g = totals.get("global", {}) or {}
         devices = totals.get("devices", []) or []
         my_id = self.store.identity()[0]
         tv = self.cloud_tree
-        tv.delete(*tv.get_children())
+        tv.clear()
 
         def fmt(v):
             try:
@@ -747,135 +1692,133 @@ class App:
 
         for d in devices:
             name = d.get("device_name") or (d.get("device_id", "") or "")[:8]
-            tags = ()
-            if d.get("device_id") == my_id:
+            is_self = d.get("device_id") == my_id
+            if is_self:
                 name += "  (this device)"
-                tags = ("self",)
-            tv.insert("", "end", tags=tags, values=(
+            it = QTreeWidgetItem([
                 name, fmt(d.get("keystrokes")), fmt(d.get("words")),
                 fmt(d.get("deletions")), fmt(d.get("alt_tabs")),
                 fmt(d.get("power_cycles")),
-            ))
+            ])
+            for i in range(1, 1 + len(_METRIC_COLS)):
+                it.setTextAlignment(i, Qt.AlignRight | Qt.AlignVCenter)
+            if is_self:
+                for c in range(1 + len(_METRIC_COLS)):
+                    it.setForeground(c, QColor(SELF_GREEN))
+            tv.addTopLevelItem(it)
 
         count = totals.get("device_count", len(devices))
-        tv.insert("", "end", tags=("total",), values=(
+        total_it = QTreeWidgetItem([
             f"Cloud total ({count} device{'s' if count != 1 else ''})",
             fmt(g.get("keystrokes")), fmt(g.get("words")),
             fmt(g.get("deletions")), fmt(g.get("alt_tabs")),
             fmt(g.get("power_cycles")),
-        ))
-        tv.configure(height=min(max(len(devices) + 1, 1), 6))
+        ])
+        f = total_it.font(0); f.setBold(True)
+        for c in range(1 + len(_METRIC_COLS)):
+            total_it.setFont(c, f)
+            total_it.setTextAlignment(c, Qt.AlignRight | Qt.AlignVCenter)
+        total_it.setTextAlignment(0, Qt.AlignLeft | Qt.AlignVCenter)
+        tv.addTopLevelItem(total_it)
+        rows = min(max(len(devices) + 1, 1), 6)
+        tv.setFixedHeight(rows * 24 + 30)
 
-    def toggle_autosync(self):
-        self.cfg.data["autosync"] = bool(self.autosync_var.get())
+    def toggle_autosync(self, checked):
+        self.cfg.data["autosync"] = bool(checked)
         self.cfg.save()
-        if self.autosync_var.get():
+        if checked:
             self.set_status("Auto-sync on (every 15 min).")
-            self._sync_now("manual")  # sync immediately when switched on
+            self._sync_now("manual")
         else:
             self.set_status("Auto-sync off.")
 
-    # -- loops -------------------------------------------------------------- #
-    def _poll_commands(self):
-        try:
-            while True:
-                kind, val = self.cmd_q.get_nowait()
-                if kind == "status":
-                    self.set_status(val)
-                elif kind == "cloud_totals":
-                    self._render_cloud(val)
-                elif kind == "synced":
-                    now = dt.datetime.now().strftime("%H:%M:%S")
-                    self.sync_lbl.config(text=f"Last cloud sync: {now}")
-                    self.set_status("Synced.")
-                elif kind == "sync_done":
-                    self._sync_in_flight = False
-                elif kind == "push":
-                    self.on_push()
-                elif kind == "show":
-                    self.show_window()
-                elif kind == "quit":
-                    self.quit_app()
-        except queue.Empty:
-            pass
-        if self.running:
-            self.root.after(150, self._poll_commands)
-
+    # -- periodic loops ----------------------------------------------------- #
     def _tick(self):
         n = self.store.days_since()
-        self.since_lbl.config(
-            text=f"Tracking since {self.store.start_date()}  \u00b7  {n} day{'s' if n != 1 else ''}"
-        )
+        self.since_lbl.setText(
+            f"Tracking since {self.store.start_date()}  ·  {n} day{'s' if n != 1 else ''}")
         bd = self.store.breakdown()
         for name in self.WINDOW_ROWS:
             b = bd[name]
-            self.tree.item(name, values=(
-                name,
-                f"{b['keystrokes']:,}",
-                f"{b['words']:,}",
-                f"{b['deletions']:,}",
-                f"{b['alt_tabs']:,}",
-                f"{b['power_cycles']:,}",
-            ))
+            it = self._device_items[name]
+            it.setText(1, f"{b['keystrokes']:,}")
+            it.setText(2, f"{b['words']:,}")
+            it.setText(3, f"{b['deletions']:,}")
+            it.setText(4, f"{b['alt_tabs']:,}")
+            it.setText(5, f"{b['power_cycles']:,}")
         self._update_books()
-        if self.running:
-            self.root.after(1000, self._tick)
 
     def _update_books(self):
-        # Compare all-time words typed against each Tolkien milestone.
         typed = self.store.totals().get("words", 0)
         for title, count, is_agg in BOOK_WORD_COUNTS:
             pct = (typed / count * 100) if count else 0.0
             left = max(0, count - typed)
-            tags = ("aggregate",) if is_agg else ()
-            if typed >= count:
-                tags += ("done",)
-            self.books_tree.item(title, tags=tags, values=(
-                title, f"{count:,}", f"{pct:.1f}%", f"{left:,}",
-            ))
+            it = self._book_items[title]
+            it.setText(1, f"{count:,}")
+            it.setText(2, f"{pct:.1f}%")
+            it.setText(3, f"{left:,}")
+            done = typed >= count
+            colr = QColor(DONE_GREEN) if done else QColor(INK)
+            for c in range(4):
+                it.setForeground(c, colr)
 
     def _autosave(self):
         self.store.prune()
         self.store.save()
-        if self.running:
-            self.root.after(5000, self._autosave)
 
     def _autosync(self):
-        # Push this device + pull all devices, every 15 min, when configured.
         if self.cfg.autosync:
             self._sync_now("auto")
         if self.running:
-            self.root.after(SYNC_INTERVAL_MS, self._autosync)
+            QTimer.singleShot(SYNC_INTERVAL_MS, self._autosync)
 
     # -- tray --------------------------------------------------------------- #
-    def _make_icon_image(self):
-        img = Image.new("RGB", (64, 64), (28, 28, 30))
-        d = ImageDraw.Draw(img)
-        d.rectangle([10, 18, 54, 46], outline=(120, 200, 255), width=3)
-        d.text((24, 26), "T", fill=(120, 200, 255))
-        return img
-
     def _start_tray(self):
-        menu = pystray.Menu(
-            pystray.MenuItem("Open", lambda: self.cmd_q.put(("show", None)), default=True),
-            pystray.MenuItem("Push to Cloud", lambda: self.cmd_q.put(("push", None))),
-            pystray.MenuItem("Quit", lambda: self.cmd_q.put(("quit", None))),
-        )
-        self.tray = pystray.Icon(APP_NAME, self._make_icon_image(), APP_DISPLAY_NAME, menu)
-        threading.Thread(target=self.tray.run, daemon=True).start()
+        self.tray = QSystemTrayIcon(self._app_icon(), self)
+        self.tray.setToolTip(APP_DISPLAY_NAME)
+        menu = QMenu()
+        act_open = menu.addAction("Open")
+        act_push = menu.addAction("Push to Cloud")
+        menu.addSeparator()
+        act_quit = menu.addAction("Quit")
+        act_open.triggered.connect(self.show_window)
+        act_push.triggered.connect(self.on_push)
+        act_quit.triggered.connect(self.quit_app)
+        self.tray.setContextMenu(menu)
+        self.tray.activated.connect(self._tray_activated)
+        self.tray.show()
+
+    def _tray_activated(self, reason):
+        if reason in (QSystemTrayIcon.Trigger, QSystemTrayIcon.DoubleClick):
+            self.show_window()
 
     # -- window state ------------------------------------------------------- #
-    def hide_window(self):
-        if HAVE_TRAY:
-            self.root.withdraw()
+    def changeEvent(self, e):
+        # Pause the vine animation while minimised so it uses no CPU in the
+        # background; resume when restored. (Hide-to-tray is handled by the
+        # border's own hideEvent/showEvent.)
+        if e.type() == QEvent.WindowStateChange and hasattr(self, "border"):
+            if self.isMinimized():
+                self.border.pause()
+            else:
+                self.border.resume()
+        super().changeEvent(e)
+
+    def closeEvent(self, e):
+        # Closing the window hides to tray (matching the old Tk behaviour);
+        # quitting happens only via the tray menu or quit_app().
+        if HAVE_TRAY and self.running:
+            e.ignore()
+            self.hide()
             self.set_status("Running in the tray.")
         else:
+            e.accept()
             self.quit_app()
 
     def show_window(self):
-        self.root.deiconify()
-        self.root.lift()
-        self.root.focus_force()
+        self.showNormal()
+        self.raise_()
+        self.activateWindow()
 
     def quit_app(self):
         self.running = False
@@ -889,13 +1832,14 @@ class App:
             pass
         if self.tray:
             try:
-                self.tray.stop()
+                self.tray.hide()
             except Exception:
                 pass
-        self.root.after(50, self.root.destroy)
+        QApplication.instance().quit()
 
     def run(self):
-        self.root.mainloop()
+        # kept for call-site compatibility; the real loop runs in main()
+        self.show_window()
 
 
 # --------------------------------------------------------------------------- #
@@ -916,8 +1860,14 @@ def main():
     counter.start()
 
     cfg = Config()
-    App(store, counter, cfg, start_minimized=start_minimized,
-        first_run=first_run, writable=writable).run()
+
+    qapp = QApplication(sys.argv)
+    qapp.setApplicationName(APP_NAME)
+    # Don't quit when the window is hidden to tray (only quit_app() should exit).
+    qapp.setQuitOnLastWindowClosed(False)
+    win = App(store, counter, cfg, start_minimized=start_minimized,
+              first_run=first_run, writable=writable)
+    sys.exit(qapp.exec())
 
 
 if __name__ == "__main__":
