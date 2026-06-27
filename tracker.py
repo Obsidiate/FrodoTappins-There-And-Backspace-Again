@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Tallyton - a small, privacy-respecting activity counter for Windows.
+FrodoTappins - a small, privacy-respecting activity counter for Windows.
 
 It COUNTS (it never records WHICH keys you press, only how many):
   - total keystrokes per day
@@ -55,9 +55,9 @@ HAVE_TRAY = True
 
 # Internal/short name: used for filesystem paths (Startup shortcut) and
 # non-visible code.
-APP_NAME = "Tallyton"
+APP_NAME = "FrodoTappins"
 # Full display name: shown in the window title, tray tooltip, and dialogs.
-APP_DISPLAY_NAME = "Tallyton - There and Backspace Again"
+APP_DISPLAY_NAME = "FrodoTappins - There and Backspace Again"
 FIELDS = ("keystrokes", "words", "deletions", "alt_tabs", "power_cycles")
 
 # Word-count milestones: how your all-time word total compares to Tolkien's
@@ -94,7 +94,7 @@ def ensure_writable(path: str) -> bool:
     """True if we can actually write in `path` (portable data lives here)."""
     try:
         os.makedirs(path, exist_ok=True)
-        probe = os.path.join(path, ".tallyton_write_test")
+        probe = os.path.join(path, ".frodotappins_write_test")
         with open(probe, "w", encoding="utf-8") as f:
             f.write("ok")
         os.remove(probe)
@@ -1193,7 +1193,7 @@ def _checkmark_image_path():
     p.drawPath(path)
     p.end()
 
-    out = os.path.join(tempfile.gettempdir(), "tallyton_check.png")
+    out = os.path.join(tempfile.gettempdir(), "frodotappins_check.png")
     img.save(out, "PNG")
     _CHECK_PNG = out
     return out
@@ -1633,7 +1633,7 @@ class App(QMainWindow):
         self.show_window()
         QMessageBox.warning(
             self, APP_DISPLAY_NAME,
-            "Tallyton can't save data in its current folder:\n\n"
+            "FrodoTappins can't save data in its current folder:\n\n"
             f"{app_dir()}\n\n"
             "It needs to live somewhere writable — a normal folder, your Desktop, "
             "or a USB drive, but not Program Files or a read-only location. Move the "

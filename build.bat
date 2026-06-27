@@ -1,5 +1,5 @@
 @echo off
-REM Build Tallyton.exe   --   run this on Windows with Python 3.9+ installed.
+REM Build FrodoTappins.exe   --   run this on Windows with Python 3.9+ installed.
 setlocal
 
 echo Installing dependencies...
@@ -8,13 +8,13 @@ python -m pip install -r requirements.txt pyinstaller
 if errorlevel 1 goto :error
 
 echo.
-echo Building Tallyton.exe ...
+echo Building FrodoTappins.exe ...
 REM --onefile    : single portable .exe
 REM --noconsole  : no black console window (it's a GUI/tray app)
 REM The GUI is PySide6 (Qt); PyInstaller's bundled Qt hook pulls in what's
 REM needed. We exclude the heavy Qt modules the app never touches (WebEngine,
 REM multimedia, 3D, QML, etc.) so the single-file exe stays as small as it can.
-python -m PyInstaller --onefile --noconsole --name Tallyton ^
+python -m PyInstaller --onefile --noconsole --name FrodoTappins ^
   --exclude-module PySide6.QtWebEngineCore ^
   --exclude-module PySide6.QtWebEngineWidgets ^
   --exclude-module PySide6.QtWebEngineQuick ^
@@ -36,7 +36,7 @@ python -m PyInstaller --onefile --noconsole --name Tallyton ^
 if errorlevel 1 goto :error
 
 echo.
-echo Done.  Your executable is at:  dist\Tallyton.exe
+echo Done.  Your executable is at:  dist\FrodoTappins.exe
 echo Double-click it, then tick "Start automatically at login" in the window.
 goto :eof
 

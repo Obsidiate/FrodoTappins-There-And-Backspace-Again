@@ -1,4 +1,4 @@
-# --- Tallyton build artifacts (do NOT commit) ---
+# --- FrodoTappins build artifacts (do NOT commit) ---
 # PyInstaller intermediate + output dirs. These embed the building machine's
 # absolute paths (incl. your Windows username) and are large/binary. Build from
 # source instead, and attach the .exe to a GitHub Release rather than the repo.

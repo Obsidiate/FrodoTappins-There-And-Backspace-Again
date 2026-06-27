@@ -1,4 +1,4 @@
-// Tallyton sync Worker (Cloudflare Workers + D1, free tier).
+// FrodoTappins sync Worker (Cloudflare Workers + D1, free tier).
 //
 // Endpoints (both require the header  X-API-Key: <your key>):
 //   POST /sync     body: { device_id, device_name, days: [{day,keystrokes,words,deletions,alt_tabs,power_cycles}, ...] }

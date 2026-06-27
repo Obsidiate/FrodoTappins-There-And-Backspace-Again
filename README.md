@@ -1,4 +1,4 @@
-# Tallyton — There and Backspace Again
+# FrodoTappins — There and Backspace Again
 
 A small, privacy-respecting activity counter for Windows. It tracks, per day:
 
@@ -45,7 +45,7 @@ verify this yourself (see `Counter._on_press` in `tracker.py`).
 ```
 tracker.py          The whole local app (listener + GUI + tray + sync + autostart)
 requirements.txt    Python dependencies
-build.bat           One-command build -> dist/Tallyton.exe
+build.bat           One-command build -> dist/FrodoTappins.exe
 worker.js           Cloudflare Worker (the sync API)
 schema.sql          D1 table definition (top two lines paste straight into the D1 console)
 wrangler.toml       Optional — only used if you deploy via the Wrangler CLI
@@ -66,7 +66,7 @@ Python to PATH* in the installer). Then, in this folder:
 build.bat
 ```
 
-That installs the dependencies + PyInstaller and produces **`dist\Tallyton.exe`**
+That installs the dependencies + PyInstaller and produces **`dist\FrodoTappins.exe`**
 — a single portable file with no console window. Double-click it and a small
 window appears showing today's figures and your all-time totals.
 
@@ -75,7 +75,7 @@ window appears showing today's figures and your all-time totals.
 
 ### Where your data lives (portable)
 
-Tallyton keeps everything in **its own folder**, right next to the executable:
+FrodoTappins keeps everything in **its own folder**, right next to the executable:
 `data.json` (your counts, device id, start date) and `config.json` (your Worker
 URL + key, and the auto-sync setting). Nothing is written to AppData or the
 registry. To move it, move the whole folder; to back it up, copy the folder; to
@@ -120,7 +120,7 @@ Two names must match the code exactly (both case-sensitive): the database bindin
 **a. Create the database and load the table**
 
 1. Dashboard → **Storage & Databases → D1 SQL Database → Create Database**. Name
-   it (e.g. `tallyton`) and create it.
+   it (e.g. `frodotappins`) and create it.
 2. Open the database → **Console** (on some accounts this is behind an *Explore
    Data* button) and paste these two statements, then run them. They are the top
    two lines of `schema.sql` — already on single lines with no comments, exactly
@@ -136,7 +136,7 @@ Two names must match the code exactly (both case-sensitive): the database bindin
 **b. Create the Worker**
 
 3. **Workers & Pages → Create application → Create Worker**, name it (e.g.
-   `tallyton-sync`), and **Deploy** (this deploys a placeholder you'll replace).
+   `frodotappins-sync`), and **Deploy** (this deploys a placeholder you'll replace).
 
 **c. Bind the database**
 
@@ -157,7 +157,7 @@ Two names must match the code exactly (both case-sensitive): the database bindin
    (Settings → Domains & Routes). The Worker's page shows its
    `https://<worker-name>.<your-subdomain>.workers.dev` URL.
 
-**Connect the app:** in Tallyton's *Cloud* box paste that Worker URL and the same
+**Connect the app:** in FrodoTappins's *Cloud* box paste that Worker URL and the same
 API key, click **Save**, then **Push to Cloud**. Sanity-check in a browser by
 visiting `<your worker URL>/totals` — it should return `{"error":"unauthorized"}`
 (the Worker is alive; a browser doesn't send the key). Install the app on another

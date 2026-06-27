@@ -1,9 +1,9 @@
-name = "tallyton-sync"
+name = "frodotappins-sync"
 main = "worker.js"
 compatibility_date = "2025-01-01"
 
-# Paste the database_id printed by `wrangler d1 create tallyton` below.
+# Paste the database_id printed by `wrangler d1 create frodotappins` below.
 [[d1_databases]]
 binding = "DB"
-database_name = "tallyton"
+database_name = "frodotappins"
 database_id = "PASTE_DATABASE_ID_HERE"
