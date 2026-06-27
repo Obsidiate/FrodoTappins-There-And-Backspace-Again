@@ -29,12 +29,11 @@ It also shows, against your all-time word total, how far you've typed toward
 some of Tolkien's works (*The Hobbit*, *The Lord of the Rings*, *The
 Silmarillion*) — a percentage and the words you have left to go for each.
 
-It can run entire offline, or sync multiple devices via a free-tier Cloudflare account's DB + workers (setup instructions included). 
+It can run entire offline, or sync multiple devices via a free-tier Cloudflare
+account's DB + workers (setup instructions included). 
 
-Why? Idle curiousity. Open source so you can verify keystrokes are not logged, stored, or transmitted. Only counted.
-
-It also shows your **start date** and **days since** you began tracking, and a
-live **breakdown** across the last hour, day, week, month, year, and all-time.
+Why? Idle curiousity. Open source so you can verify keystrokes are not logged,
+stored, or transmitted. Only counted.
 
 It is fully **portable and offline**: everything lives in the app's own folder
 (move it, copy it to a USB stick, or delete it to uninstall — see below), and it
@@ -55,6 +54,17 @@ verify this yourself (see `Counter._on_press` in `tracker.py`).
 
 ---
 
+## Easy install 
+
+There is a ZIP file in the latest release (top right of the github page). 
+
+Download that zip, extract to your preferred directory, and run the exe. That's it. 
+The other files are only needed if you're setting up the cloud sync. The exe will
+create files to store data in the same folder. Just delete the whole schemozzle 
+to uninstall. 
+
+---
+
 ## Files
 
 ```
@@ -68,11 +78,7 @@ wrangler.toml       Optional — only used if you deploy via the Wrangler CLI
 
 ---
 
-A downloadable portable EXE is available, else 
-
----
-
-## 1. Build the .exe (Windows)
+## 1. Build youself method. (Windows, *.exe)
 
 You need [Python 3.9+](https://www.python.org/downloads/) installed (tick *Add
 Python to PATH* in the installer). Then, in this folder:
