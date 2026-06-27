@@ -24,6 +24,7 @@ import socket
 import time
 import threading
 import subprocess
+import tempfile
 import datetime as dt
 import urllib.request
 import urllib.error
@@ -1164,6 +1165,40 @@ _METRIC_HDRS = {"keystrokes": "Keys", "words": "Words", "deletions": "Del",
                 "alt_tabs": "Alt-Tab", "power_cycles": "Cycles"}
 
 
+_CHECK_PNG = None  # cached path to the generated checkmark image
+
+
+def _checkmark_image_path():
+    """Paint a bold checkmark once and cache it as a PNG, so the *checked* state
+    of every QCheckBox shows an unmistakable tick (not just a colour change).
+    The ink-coloured tick sits on the amber :checked fill for clear contrast.
+    Generated at runtime, so there is no image asset to ship."""
+    global _CHECK_PNG
+    if _CHECK_PNG and os.path.exists(_CHECK_PNG):
+        return _CHECK_PNG
+
+    s = 28  # paint big and let Qt scale down for a crisp anti-aliased edge
+    img = QImage(s, s, QImage.Format_ARGB32)
+    img.fill(Qt.transparent)
+    p = QPainter(img)
+    p.setRenderHint(QPainter.Antialiasing, True)
+    path = QPainterPath()
+    path.moveTo(s * 0.20, s * 0.52)
+    path.lineTo(s * 0.42, s * 0.74)
+    path.lineTo(s * 0.80, s * 0.26)
+    pen = QPen(QColor(INK), s * 0.16)
+    pen.setCapStyle(Qt.RoundCap)
+    pen.setJoinStyle(Qt.RoundJoin)
+    p.setPen(pen)
+    p.drawPath(path)
+    p.end()
+
+    out = os.path.join(tempfile.gettempdir(), "tallyton_check.png")
+    img.save(out, "PNG")
+    _CHECK_PNG = out
+    return out
+
+
 def _qss():
     """The warm dark-wood stylesheet. Tables stay light (parchment) as readable
     'pages'; everything around them is wood and amber."""
@@ -1215,10 +1250,14 @@ def _qss():
     QPushButton:pressed {{ background: {WOOD_DARK}; }}
     QCheckBox {{ color: {AMBER}; background: transparent; spacing: 6px; }}
     QCheckBox::indicator {{
-        width: 15px; height: 15px; border: 1px solid {WOOD_LIGHT};
+        width: 17px; height: 17px; border: 1px solid {WOOD_LIGHT};
         border-radius: 3px; background: {WOOD_DEEP};
     }}
-    QCheckBox::indicator:checked {{ background: {AMBER}; border: 1px solid {AMBER}; }}
+    QCheckBox::indicator:hover {{ border: 1px solid {AMBER}; }}
+    QCheckBox::indicator:checked {{
+        background: {AMBER}; border: 1px solid {AMBER};
+        image: url("{_checkmark_image_path().replace(chr(92), '/')}");
+    }}
     QTreeWidget {{
         background: {PARCHMENT}; alternate-background-color: {PARCHMENT_2};
         color: {INK}; border: 1px solid {WOOD_MID}; border-radius: 6px;
