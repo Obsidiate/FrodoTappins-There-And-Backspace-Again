@@ -1,0 +1,4 @@
+pynput>=1.7.6
+psutil>=5.9
+pystray>=0.19
+Pillow>=9.0

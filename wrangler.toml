@@ -1,0 +1,9 @@
+name = "tallyton-sync"
+main = "worker.js"
+compatibility_date = "2025-01-01"
+
+# Paste the database_id printed by `wrangler d1 create tallyton` below.
+[[d1_databases]]
+binding = "DB"
+database_name = "tallyton"
+database_id = "PASTE_DATABASE_ID_HERE"

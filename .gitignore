@@ -1,0 +1,32 @@
+# --- Tallyton build artifacts (do NOT commit) ---
+# PyInstaller intermediate + output dirs. These embed the building machine's
+# absolute paths (incl. your Windows username) and are large/binary. Build from
+# source instead, and attach the .exe to a GitHub Release rather than the repo.
+build/
+dist/
+*.spec
+
+# --- Python ---
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+env/
+
+# --- Runtime data / local config (lives next to the exe, but ignore here too
+#     in case anyone runs from the source folder). data.json holds your device
+#     id + counts; config.json holds your Worker URL + API key -- never commit. ---
+data.json
+data.json.tmp
+config.json
+
+# --- Cloudflare / Wrangler ---
+.wrangler/
+node_modules/
+
+# --- Editor / OS noise ---
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
